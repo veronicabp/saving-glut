@@ -83,6 +83,9 @@ dfa_relations = {
 	'Time deposits and short-term investments - dfa': ['Time and Savings Deposits']
 }
 
+def load_data(file_name, folder='clean'):
+    return pd.read_csv(os.path.join(data_folder, folder, file_name))
+
 def weighted_sum_collapse(df, group, variables, weight):
     df = df[group + variables + [weight]] 
     
@@ -216,3 +219,5 @@ def load_nipa_tables():
     nipa['GovSaving'] = -1*nipa['GovDeficit']
     
     return nipa
+
+
