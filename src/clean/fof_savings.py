@@ -254,7 +254,7 @@ def main():
 	df.columns = df.columns.get_level_values(0)
 	df = df.reset_index()
 
-	df = pd.melt(df, id_vars='Year', value_vars=[1,9,90], var_name='Percentile', value_name='Saving2NI')
+	df = pd.melt(df, id_vars='Year', value_vars=[1,9,90], var_name='Percentile', value_name='FOFsaving2NI')
 	df.to_csv(os.path.join(clean_folder, 'fof_savings.csv'), index=False)
 
 
