@@ -1,242 +1,105 @@
+import sys
+sys.path.append('')
 from utils import * 
-
-def load_national_income():
-	file = os.path.join(raw_folder, 'fred', 'MKTGNIUSA646NWDB.csv')
-	natincome = pd.read_csv(file)
-	natincome['Date'] = pd.to_datetime(natincome['DATE'])
-	natincome['year'] = natincome.Date.dt.year
-	natincome = natincome.rename(columns={'MKTGNIUSA646NWDB':'national_income'})
-	natincome['national_income'] = (natincome.national_income/1e9)
-	natincome = natincome[['year', 'national_income']]
-	return natincome
-
-def get_wealth_shares(df, wealth_data, relations_dict):
-	# Merge with dina shares
-	df.fillna(0, inplace=True)
-	df = pd.merge(df, wealth_data, on='year')
-
-	# Create amounts held by houeshold percentiles over time
-	df['amount_held'] = 0
-	for wealth_key in relations_dict:
-		for ff_key in relations_dict[wealth_key]:
-			df['amount_held'] += df[wealth_key] * df[ff_key]
-
-	df = df[['primary_asset','year','percentile','amount_held','national_income']]
-	df['share_held'] = df['amount_held']/df['national_income']
-	return df
-
-def get_dina_asset_shares():
-	file = os.path.join(raw_folder, 'dina', 'usdina19622019.dta')
-	df = pd.read_stata(file)
-
-	df['percentile'] = pd.cut(df['wealth_ptile'], 
-					  bins=[0, 90, 99, 100], 
-					  labels=[90, 9, 1],
-					  right=True)
-
-	df['returns'] = np.round(df['dweght']/1e5)
-
-	df = df.drop(columns='equity')
-	df = df.rename(columns={'hwbus':'bus', 'hwpen':'pens', 'hwequ':'equity'})
-
-	variables = ['taxbond', 'currency','equity','bus','pens','muni']
-	df = df[variables + ['year','percentile', 'returns']]
-
-	for var in variables:
-		df[f'{var}_w'] = df[var] * df['returns']
-
-	df = df.copy() # Reduce fragmentation
-
-	# Collapse by percentile groups
-	df = df.groupby(['year', 'percentile'], observed=True)[[f'{var}_w' for var in variables]].sum().reset_index()
-
-	# Get share of total 
-	for var in variables:
-		df[f'sz{var}'] = df.groupby(['year'])[f'{var}_w'].transform('sum')
-		df[f'sz{var}sh'] = df[f'{var}_w']/df[f'sz{var}']
-		df = df.drop(columns={f'{var}_w', f'sz{var}'})
-
-	return df
-
-def get_mufu_split():
-	full_df = pd.read_csv(os.path.join(raw_folder, 'fof', 'fof.csv'))
-	df = full_df[(full_df.FREQ==203)&(full_df.SERIES_PREFIX=='LM')].copy()
-
-	df['TIME_PERIOD'] = pd.to_datetime(df['TIME_PERIOD'])
-	df['year'] = df.TIME_PERIOD.dt.year
-	df['SERIES_NAME'] = df['SERIES_NAME'].str.replace('.','').str.lower()
-
-	df = df[['SERIES_NAME','year','OBS_VALUE']]
-	df = df.pivot(index='year', columns='SERIES_NAME', values='OBS_VALUE').reset_index()
-
-	# Add new calculated columns
-	df['a_mufu_equ_sh'] = (df['lm654091600a'] + df['lm654092603a']) / (df['lm654090000a'] - df['lm654091403a'])
-	df['a_mufu_bnd_sh'] = (df['lm654091303a'] + df['lm654091203a'] - df['lm653062003a']) / (df['lm654090000a'] - df['lm654091403a'])
-	df['a_mufu_mun_sh'] = df['lm653062003a'] / (df['lm654090000a'] - df['lm654091403a'])
-
-	# Normalize to sum to 1
-	total_sh = df['a_mufu_equ_sh'] + df['a_mufu_bnd_sh'] + df['a_mufu_mun_sh']
-	df['a_mufu_equ_sh'] /= total_sh
-	df['a_mufu_bnd_sh'] /= total_sh
-	df['a_mufu_mun_sh'] /= total_sh
-
-	# Interpolate in missing years
-	df['temp'] = df['lm653064100a']/df['lm654090000a']
-
-	# Filter out rows where either 'a_mufu_equ_sh' or 'temp' is NaN
-	df_for_interp = df[df[['a_mufu_equ_sh', 'temp']].notna().all(axis=1)]
-
-	# Sort data by 'temp' if not already sorted; important for interpolation
-	df_for_interp = df_for_interp.sort_values('temp')
-
-	# Create interpolation function
-	interp_func = interp1d(df_for_interp['temp'], df_for_interp['a_mufu_equ_sh'], kind='linear', fill_value='extrapolate')
-
-	# Apply the interpolation function to the full range of 'temp' in original DataFrame
-	df['a_mufu_equ_sh_ipol'] = interp_func(df['temp'])
-
-	# Replace original column with interpolated values where original is missing
-	df.loc[df['a_mufu_equ_sh'].isnull(), 'a_mufu_equ_sh'] = df['a_mufu_equ_sh_ipol']
-
-	df['temp2'] = (df['a_mufu_bnd_sh'] / (df['a_mufu_mun_sh'] + df['a_mufu_bnd_sh'])).mean()
-	# Conditional replacements
-	df.loc[df['a_mufu_bnd_sh'].isnull(), 'a_mufu_bnd_sh'] = (1 - df['a_mufu_equ_sh']) * df['temp2']
-
-	# Update 'a_mufu_mun_sh' based on new 'a_mufu_bnd_sh'
-	df['a_mufu_mun_sh'] = 1 - df['a_mufu_bnd_sh'] - df['a_mufu_equ_sh']
-
-	df = df[['year', 'a_mufu_equ_sh', 'a_mufu_bnd_sh', 'a_mufu_mun_sh']]
-
-	return df
-
-def map_using_dina(df):
-	dina_relations = {
-		'sztaxbondsh':[
-			'Agency- and GSE-Backed Securities', 
-			'Corporate and Foreign Bonds', 
-			'Time and Savings Deposits', 
-			'Money Market Fund Shares',
-			'Other Loans and Advances', 
-			'Identified Miscellaneous Financial Claims - Part I',
-			'Identified Miscellaneous Financial Claims - Part II',
-			'Mutual Fund Shares (Bond)',
-			'Treasury Securities',
-			# Add all uncategorized fields to this category:
-			'Trade Credit',
-			'Multifamily Residential Mortgages',
-			'Direct Investment',
-			'Open Market Paper',
-			'Taxes Payable by Businesses',
-			'Net Interbank Transactions',
-			'Commercial Mortgages',
-			'Home Mortgages',
-			'Farm Mortgages',
-			'U.S. Official Reserve Assets and SDR Allocations',
-			'Municipal Securities',
-			'Federal Funds and Security Repurchase Agreements',
-			'U.S. Deposits in Foreign Countries',
-			'Consumer Credit'
-			],
-		'szcurrencysh':['Checkable Deposits and Currency'],
-		'szequitysh':[
-			'Corporate Equities', 
-			'Mutual Fund Shares (Equity)'
-			],
-		'szbussh':["Proprietors' Equity in Noncorporate Business"],
-		'szpenssh':[
-			'Pension Entitlements', 
-			'Life Insurance Reserves'
-			],
-		'szmunish':['Mutual Fund Shares (Municipal)']
-	}
-
-	# Separate mutual fund shares
-	mufu = get_mufu_split()
-	df = pd.merge(df, mufu, on='year')
-	mufu_types = {'Equity':'equ', 'Bond':'bnd', 'Municipal':'mun'}
-	for key in mufu_types:
-		df[f'Mutual Fund Shares ({key})'] = df['Mutual Fund Shares'] * df[f'a_mufu_{mufu_types[key]}_sh']
-
-	return get_wealth_shares(df, get_dina_asset_shares(), dina_relations)
+from fof_savings import *
 
 def get_unfunded_pension_wealth():
 	df = pd.read_stata(os.path.join(raw_folder, 'fof', 'LQpanel_2022Q2.dta'))
 	df['date'] = pd.to_datetime(df['quarter'])
-	df['year'] = df.date.dt.year
+	df['Year'] = df.date.dt.year
 	df = df[df.date.dt.quarter==4]
 	
 	df = df.rename(columns={'fl153050005a':'finact_pens', 'fl593073045q':'finact_pens_uf'})
-	return df[['year','finact_pens','finact_pens_uf']]
+	return df[['Year','finact_pens','finact_pens_uf']]
 	
-def get_dfa_asset_shares():
-    file = os.path.join(raw_folder, 'dfa', 'dfa-networth-levels-detail.csv')
-    df = pd.read_csv(file)
+def load_dfa(mappings):
+	file = os.path.join(raw_folder, 'dfa', 'dfa-networth-levels-detail.csv')
+	df = pd.read_csv(file)
 
-    # Keep one entry per year
-    df['year'] = df['Date'].str.slice(0,4).astype(int)
-    df = df[df.Date.str.endswith('Q4')]
+	# Keep one entry per year
+	df['Year'] = df['Date'].str.slice(0,4).astype(int)
+	df = df[df.Date.str.endswith('Q4')]
 
-    # Combine bottom 90
-    df['percentile'] = df['Category'].replace({'Bottom50': 90, 'Next40': 90, 'Top1':1, 'Next9':9})
-    df = df.groupby(['year', 'percentile']).sum().reset_index()
+	# Combine bottom 90
+	df['Percentile'] = df['Category'].replace({'Bottom50': 90, 'Next40': 90, 'Top1':1, 'Next9':9})
+	df = df.groupby(['Year', 'Percentile']).sum().reset_index()
 
-    #Exclude unfunded pension wealth
-    unfunded_pensions = get_unfunded_pension_wealth()
-    df = df.merge(unfunded_pensions, on='year')
-    df['Pensions Total'] = df.groupby(['year'])['Pension entitlements'].transform('sum')
-    df['Pensions Exc. Unfund'] = df['Pensions Total'] - df['finact_pens_uf']
-    df['Pension entitlements'] = df['Pension entitlements'] * df['Pensions Exc. Unfund']/df['Pensions Total']
-    df = df.drop(columns=['Pensions Total','Pensions Exc. Unfund', 'finact_pens', 'finact_pens_uf', 'Date', 'Category'])
+	#Exclude unfunded pension wealth
+	unfunded_pensions = get_unfunded_pension_wealth()
+	df = df.merge(unfunded_pensions, on='Year')
+	df['Pensions Total'] = df.groupby(['Year'])['Pension entitlements'].transform('sum')
+	df['Pensions Exc. Unfund'] = df['Pensions Total'] - df['finact_pens_uf']
+	df['Pension entitlements'] = df['Pension entitlements'] * df['Pensions Exc. Unfund']/df['Pensions Total']
+	df = df.drop(columns=['Pensions Total','Pensions Exc. Unfund', 'finact_pens', 'finact_pens_uf', 'Date', 'Category'])
 
-    variables = [col for col in df.columns if col not in ['year', 'percentile']]
-    for var in variables:
-        df[f'{var}_tot'] = df.groupby(['year'])[var].transform('sum')
-        df[var] = df[var]/df[f'{var}_tot']
-        df = df.drop(columns=f'{var}_tot')
+	variables = [col for col in df.columns if col not in ['Year', 'Percentile']]
+	for var in variables:
+	    df[f'{var}_tot'] = df.groupby(['Year'])[var].transform('sum')
+	    df[var] = df[var]/df[f'{var}_tot']
+	    df = df.drop(columns=f'{var}_tot')
+	    
+	df = df.rename(columns={col: col.title() for col in df.columns})
+	dfa_categories = list(mappings[~mappings['DFA Category'].isna()]['DFA Category'].unique())
 
-    df = df.rename(columns={col:f'{col} - dfa' for col in variables})
+	df = df[['Year','Percentile']+dfa_categories]
+	    
+	df = df.melt(id_vars=['Year','Percentile'], value_vars=dfa_categories, var_name='DFA Category', value_name='Percentile Share')     
+	return df
 
-    return df
+def map_to_wealth_percentiles(df, shares=None, name='DINA', relations=dina_relations):
+	df = df.merge(shares, on=[f'{name} Category','Year'])
 
-dfa = get_dfa_asset_shares()
-def map_using_dfa(df):
-	dfa_relations = {
-		'Checkable deposits and currency - dfa':['Checkable Deposits and Currency'],
-		'Corporate and foreign bonds - dfa': ['Corporate and Foreign Bonds'],
-		'Corporate equities and mutual fund shares - dfa': ['Corporate Equities', 'Mutual Fund Shares'],
-		'Debt securities - dfa': ['Agency- and GSE-Backed Securities'],
-		'Equity in noncorporate business - dfa': ["Proprietors' Equity in Noncorporate Business"],
-		'Mortgages - dfa': ['Home Mortgages'],
-		'Life insurance reserves - dfa': ['Life Insurance Reserves'],
-		'Miscellaneous assets - dfa': ['Identified Miscellaneous Financial Claims - Part I', 'Identified Miscellaneous Financial Claims - Part II'],
-		'Money market fund shares - dfa': ['Money Market Fund Shares'],
-		'Other loans and advances (Liabilities) - dfa': ['Other Loans and Advances'],
-		'Pension entitlements - dfa': ['Pension Entitlements'],
-		'Time deposits and short-term investments - dfa': ['Time and Savings Deposits']
+	df.rename(columns={'Amount':'Total Amount'}, inplace=True)
+	df['Amount'] = df['Total Amount'] * df['Subcategory Share'] * df['Percentile Share']
+
+	# Collapse
+	df = df.groupby(['Primary Asset', 'Final Holder', 'Percentile', 'Year'], observed=True).agg({'Amount':'sum', 'NationalInc':'mean'}).reset_index()
+	df[f'{name}Wealth2NI'] = df['Amount']/df['NationalInc']
+	df[f'{name}Wealth'] = df['Amount']
+	df.drop(columns=['Amount','NationalInc'], inplace=True)
+	return df
+
+def map_to_wealth_percentiles_wrapper(unveiled_by_instrument, fof):
+
+	# Load useful datasets 
+	mappings = pd.read_csv(os.path.join(raw_folder, 'personal', 'fof_distributional_relations.csv'))
+	mappings = mappings[mappings['Is Asset']==1]
+	subcategory_shares = get_subcategory_shares(fof)
+
+	# Set all instrument names to title case
+	df = unveiled_by_instrument.copy()
+	df['Instrument'] = df.apply(lambda row: row.Instrument.title(), axis=1)
+
+	# Combine miscellaneous instruments
+	df.loc[df.Instrument.str.contains('Miscellaneous'), 'Instrument'] = 'Miscellaneous Financial Claims'
+ 
+	# Keep only data for households
+	df = df[['Primary Asset', 'Final Holder', 'Instrument', 'Year', 'Amount']].groupby(['Primary Asset', 'Final Holder', 'Instrument', 'Year']).sum()['Amount'].reset_index()
+	df = df[df['Final Holder']=='Households and Nonprofit Organizations']
+
+	# Merge data
+	df = pd.merge(df, load_national_income(), on='Year')
+	df = df.merge(mappings, left_on='Instrument', right_on='Description', how='inner')
+	df = df.merge(subcategory_shares, on=['Description', 'Subcategory','Year'], how='left')
+	df.loc[df['Subcategory Share'].isna(), 'Subcategory Share'] = 1
+
+	metadata = {
+		'DINA': (load_dina(mappings), dina_relations),
+		'DFA': (load_dfa(mappings), dfa_relations)
 	}
 
-	return get_wealth_shares(df, get_dfa_asset_shares(), dfa_relations)
+	results = []
+	for key in metadata:
+		result = map_to_wealth_percentiles(df.copy(), name=key, shares=metadata[key][0], relations=metadata[key][1])
+		results.append(result)
 
-def map_to_wealth_percentiles(unveiled_by_instrument):
-
-	df = pd.merge(unveiled_by_instrument, load_national_income(), on='year')
-
-	# Reshape wide
-	df = df[['primary_asset', 'final_holder', 'instrument', 'year', 'amount','national_income']].groupby(['primary_asset', 'final_holder', 'instrument', 'year','national_income']).sum()['amount'].reset_index()
-	df = df.pivot_table(index=['primary_asset','final_holder','year','national_income'], columns='instrument', values='amount', aggfunc='first').reset_index()
-	df = df[df.final_holder=='Households and Nonprofit Organizations']
-
-	dina = map_using_dina(df)
-	# dina = pd.DataFrame()
-	dfa = map_using_dfa(df)
-
-	return dina, dfa
+	return results[0], results[1]
 
 def make_net(df, category='Rest of World'):
-	for date in tqdm(df.Date.unique()):
+	for year in tqdm(df.Year.unique()):
 		for sector in df.Holder.unique():
-			issuer_series = (df.Issuer==category)&(df.Holder==sector)&(df.Date==date)
-			holder_series = (df.Holder==category)&(df.Issuer==sector)&(df.Date==date) 
+			issuer_series = (df.Issuer==category)&(df.Holder==sector)&(df.Year==year)
+			holder_series = (df.Holder==category)&(df.Issuer==sector)&(df.Year==year) 
 			
 			row_liabs  = df[issuer_series].Amount.item() if len(df[issuer_series])>0 else 0
 			row_assets = df[holder_series].Amount.item() if len(df[holder_series])>0 else 0
@@ -320,58 +183,54 @@ def calculate_A(Omega, D, W):
 
 def unveil(df, primary_assets=[], final_holders=[]):
 	dfs = []
-	for date in tqdm(sorted(df.Date.unique())):
-		Omega, D, W = construct_matrices(df[df.Date==date], primary_assets=primary_assets, final_holders=final_holders)
+	for year in tqdm(sorted(df.Year.unique())):
+		Omega, D, W = construct_matrices(df[df.Year==year], primary_assets=primary_assets, final_holders=final_holders)
 		A = calculate_A(Omega, D, W)
 
 		# Store in a data frame
-		data = {'primary_asset':[], 'final_holder':[], 'share':[], 'date':[]}
+		data = {'Primary Asset':[], 'Final Holder':[], 'Share':[], 'Year':[]}
 		for i, asset in enumerate(primary_assets):
 			for j, holder in enumerate(final_holders):
-				data['primary_asset'].append(asset)
-				data['final_holder'].append(holder)
-				data['share'].append(A[i,j])
-				data['date'].append(date)
+				data['Primary Asset'].append(asset)
+				data['Final Holder'].append(holder)
+				data['Share'].append(A[i,j])
+				data['Year'].append(year)
 		new_df = pd.DataFrame(data)
 		dfs.append(new_df)
 
 	return pd.concat(dfs)
 
 def unveil_wrapper(fwtw_matrix, primary_assets=['Households and Nonprofit Organizations', 'Federal Government', 'Nonfinancial Non-Corporate Business', 'Nonfinancial Corporate Business', 'Non-Financial Assets'], final_holders=['Households and Nonprofit Organizations', 'Rest of World', 'Federal Government', 'State and Local Governments']):
-	fwtw_matrix['Date'] = pd.to_datetime(fwtw_matrix['Date'])
-	fwtw_matrix['year'] = fwtw_matrix.Date.dt.year
 	fwtw_matrix = fwtw_matrix[fwtw_matrix.Holder!='Instrument Discrepancies Sector'] # Remove discrepancies sector
-
-	fwtw_matrix = fwtw_matrix.groupby(['Issuer', 'Holder', 'Instrument', 'Date']).mean()['Amount'].reset_index()
-	df = fwtw_matrix.groupby(['Issuer', 'Holder', 'Date']).sum()['Amount'].reset_index()
+	fwtw_matrix = fwtw_matrix.groupby(['Issuer', 'Holder', 'Instrument', 'Year']).mean()['Amount'].reset_index()
+	df = fwtw_matrix.groupby(['Issuer', 'Holder', 'Year']).sum()['Amount'].reset_index()
 
 	# Make holdings of rest of the world net
 	df = make_net(df, category='Rest of World')
 	intermediaries = list((set(df.Issuer.unique()) | set(df.Holder.unique()))-set(final_holders)) 
 
 	# Create share issued
-	df['total_issued'] = df.groupby(['Issuer','Date'])['Amount'].transform('sum')
+	df['total_issued'] = df.groupby(['Issuer','Year'])['Amount'].transform('sum')
 	df.loc[df.total_issued==0, 'total_issued'] = 1 
 	df['pct_issued'] = df.Amount/df.total_issued
 
 	# Store levels of primary assets issued
-	data = {'primary_asset':[], 'date':[], 'level':[]}
-	for date in tqdm(sorted(df.Date.unique())):
-		L = get_level(df[df.Date==date], primary_assets=primary_assets, final_holders=final_holders)
-		for i, asset in enumerate(primary_assets):
-			data['primary_asset'].append(asset)
-			data['date'].append(date)
-			data['level'].append(L[i,0])
-			
+	data = {'Primary Asset':[], 'Year':[], 'Level':[]}
+	for year in tqdm(sorted(df.Year.unique())):
+	    L = get_level(df[df.Year==year], primary_assets=primary_assets, final_holders=final_holders)
+	    for i, asset in enumerate(primary_assets):
+	        data['Primary Asset'].append(asset)
+	        data['Year'].append(year)
+	        data['Level'].append(L[i,0])
+
 	levels = pd.DataFrame(data)
 
 	###############################
 	# 1. Unveil in aggregate 
 	###############################
 	output = unveil(df, primary_assets=primary_assets, final_holders=final_holders)
-	output = pd.merge(output, levels, on=['date', 'primary_asset'])
-	output['amount'] = output.level * output.share
-	output['year'] = output['date'].dt.year
+	output = pd.merge(output, levels, on=['Year', 'Primary Asset'])
+	output['Amount'] = output.Level * output.Share
 
 	##############################################################
 	# 2. Unveil by instrument (for percentile distribution)
@@ -381,25 +240,24 @@ def unveil_wrapper(fwtw_matrix, primary_assets=['Households and Nonprofit Organi
 	final_holders_sector = final_holders + [f'{a} - {b}' for a in df.Issuer.unique() for b in final_holders]
 
 	output_sector = unveil(df_sector, primary_assets=primary_assets, final_holders=final_holders_sector)
-	output_sector[['intermediary', 'final_holder']] = output_sector['final_holder'].str.split(' - ', expand=True)
-	output_sector = output_sector[~output_sector.final_holder.isna()]
+	output_sector[['Intermediary', 'Final Holder']] = output_sector['Final Holder'].str.split(' - ', expand=True)
+	output_sector = output_sector[~output_sector['Final Holder'].isna()]
 
 	# Allocate to instruments through which final holders directly hold debt
 	instrument_shares = fwtw_matrix.copy()
-	instrument_shares['Total'] = instrument_shares.groupby(['Issuer','Holder','Date'])['Amount'].transform('sum')
+	instrument_shares['Total'] = instrument_shares.groupby(['Issuer','Holder','Year'])['Amount'].transform('sum')
 	instrument_shares['sub_share'] = instrument_shares.Amount/instrument_shares.Total
-	instrument_shares.rename(columns={'Issuer':'intermediary', 'Holder':'final_holder', 'Instrument':'instrument', 'Date':'date'}, inplace=True)
-	instrument_shares = instrument_shares[['intermediary', 'final_holder', 'instrument', 'date', 'sub_share']]
+	instrument_shares.rename(columns={'Issuer':'Intermediary', 'Holder':'Final Holder',}, inplace=True)
+	instrument_shares = instrument_shares[['Intermediary', 'Final Holder', 'Instrument', 'Year', 'sub_share']]
 
-	output_by_instrument = pd.merge(output_sector, instrument_shares, on=['date','intermediary', 'final_holder'])
-	output_by_instrument['share'] = output_by_instrument.share * output_by_instrument.sub_share
+	output_by_instrument = pd.merge(output_sector, instrument_shares, on=['Year','Intermediary', 'Final Holder'])
+	output_by_instrument['Share'] = output_by_instrument.Share * output_by_instrument.sub_share
 	output_by_instrument.drop(columns=['sub_share'], inplace=True)
-	
-	# Merge in level
-	output_by_instrument = pd.merge(output_by_instrument, levels, on=['date', 'primary_asset'])
-	output_by_instrument['amount'] = output_by_instrument.level * output_by_instrument.share
-	output_by_instrument['year'] = output_by_instrument['date'].dt.year
 
+	# Merge in level
+	output_by_instrument = pd.merge(output_by_instrument, levels, on=['Year', 'Primary Asset'])
+	output_by_instrument['Amount'] = output_by_instrument.Level * output_by_instrument.Share
+	
 	return output, output_by_instrument
 
 def redistribute_rows(matrix, constrained, row_totals_sub, col_totals_sub):
@@ -488,23 +346,23 @@ def fill_proportionately(row_totals, col_totals):
 def normalize_duplicates(sub):
 	# For the data in the middle of the matrix, if a single series belongs to multiple columns, asign it proportionally
 	dup = sub[(~sub.Exact)&(sub.Sign=='Positive')]
-	dup = dup[dup.duplicated(subset='Series_Name')]
-	for series in dup.Series_Name.unique():
-		issuers_dup=sub[sub.Series_Name==series].Issuer.unique()
-		holders_dup=sub[sub.Series_Name==series].Holder.unique()
+	dup = dup[dup.duplicated(subset='SERIES_NAME')]
+	for series in dup.SERIES_NAME.unique():
+		issuers_dup=sub[sub.SERIES_NAME==series].Issuer.unique()
+		holders_dup=sub[sub.SERIES_NAME==series].Holder.unique()
 
 		if len(issuers_dup)>1:
 			tot = sub[(sub.Issuer.isin(issuers_dup))&(sub.Holder=='All Sectors')].Amount.sum()
 			if tot==0:
 				continue
 			for issuer_dup in issuers_dup:
-				sub.loc[(sub.Issuer==issuer_dup)&(sub.Series_Name==series), 'Amount'] *= sub[(sub.Issuer==issuer_dup)&(sub.Holder=='All Sectors')].Amount.sum()/tot
+				sub.loc[(sub.Issuer==issuer_dup)&(sub.SERIES_NAME==series), 'Amount'] *= sub[(sub.Issuer==issuer_dup)&(sub.Holder=='All Sectors')].Amount.sum()/tot
 		if len(holders_dup)>1:
 			tot = sub[(sub.Holder.isin(holders_dup))&(sub.Issuer=='All Sectors')].Amount.sum()
 			if tot==0:
 				continue
 			for holder_dup in holders_dup:
-				sub.loc[(sub.Holder==holder_dup)&(sub.Series_Name==series), 'Amount'] *= sub[(sub.Holder==holder_dup)&(sub.Issuer=='All Sectors')].Amount.sum()/tot
+				sub.loc[(sub.Holder==holder_dup)&(sub.SERIES_NAME==series), 'Amount'] *= sub[(sub.Holder==holder_dup)&(sub.Issuer=='All Sectors')].Amount.sum()/tot
 	return sub
 
 def rescale_interior(sub, issuers, holders, row_totals, col_totals):
@@ -541,11 +399,11 @@ def create_helper_matrices(sub, issuers, holders):
 	return known, constrained
 
 def create_matrix(df):
-	output = df.groupby(['Issuer', 'Holder', 'Instrument','Date']).sum()['Amount'].reset_index()
+	output = df.groupby(['Issuer', 'Holder', 'Instrument','Year']).sum()['Amount'].reset_index()
 	proportional_output = output.copy()
 	allocated_columwise = output.copy()
 	
-	df = df[(~df.Series_Name.isna())]
+	df = df[(~df.SERIES_NAME.isna())]
 
 	instruments = df.Instrument.unique()
 	for instrument in instruments:
@@ -583,19 +441,15 @@ def create_matrix(df):
 		
 	return output, proportional_output, allocated_columwise
 
-def fill_fwtw_matrix(relationships):
+def fill_fwtw_matrix(relationships, full_df):
 	# Load values
-	file = os.path.join(raw_folder, 'fof', 'fof.csv')
-	full_df = pd.read_csv(file)
-
-	full_df = full_df[['SERIES_NAME', 'SERIES_PREFIX', 'SERIES_TYPE', 'OBS_VALUE', 'TIME_PERIOD', 'Description']]
-	full_df = full_df.rename(columns={'OBS_VALUE':'Amount', 'TIME_PERIOD':'Date', 'SERIES_NAME':'Series_Name', 'SERIES_PREFIX':'Prefix', 'SERIES_TYPE':'Type'})
+	
 	full_df['Amount'] = pd.to_numeric(full_df['Amount'], errors='coerce')
 	full_df['Amount'] = full_df['Amount']/1000 # Units in billions of USD
 
 	# Merge into relationships data, keeping only
-	df = pd.merge(relationships, full_df, on=['Series_Name', 'Date'], how='left')
-	df.loc[df.Series_Name=='0', 'Amount'] = 0
+	df = pd.merge(relationships, full_df, on=['SERIES_NAME', 'Year'], how='left')
+	df.loc[df.SERIES_NAME=='0', 'Amount'] = 0
 	df.loc[df.Sign=='Negative', 'Amount'] = - df.Amount
 
 	# If liabilities are negative, add them to assets
@@ -607,15 +461,15 @@ def fill_fwtw_matrix(relationships):
 		new_row['Amount'] = -row.Amount
 		df = pd.concat([df, pd.DataFrame([new_row.values], columns=df.columns)])
 
-		df = df[~((df.Instrument==row.Instrument)&(df.Holder==row.Holder)&(df.Issuer==row.Issuer)&(df.Series_Name==row.Series_Name)&(df.Date==row.Date))].copy()
+		df = df[~((df.Instrument==row.Instrument)&(df.Holder==row.Holder)&(df.Issuer==row.Issuer)&(df.SERIES_NAME==row.SERIES_NAME)&(df.Year==row.Year))].copy()
 
 	# Set all instrument discrepancy values within the matrix as unknown
 	df.loc[(df.Holder=='Instrument Discrepancies Sector')&(df.Issuer!='All Sectors'), 'Amount'] = np.nan
 
 	# Create matrices
 	matrices, proportional_matrices, columnwise_matrices = [], [], []
-	for date in tqdm(df.Date.unique()):
-		matrix, proportional_matrix, columnwise_matrix = create_matrix(df[df.Date==date])
+	for year in tqdm(df.Year.unique()):
+		matrix, proportional_matrix, columnwise_matrix = create_matrix(df[df.Year==year])
 		matrices.append(matrix)
 		proportional_matrices.append(proportional_matrix)
 		columnwise_matrices.append(columnwise_matrix)
@@ -653,8 +507,8 @@ def load_fwtw_relationships():
 		'Issuer':[],
 		'Holder':[],
 		'Instrument':[],
-		'Series_Name':[],
-		'Date':[],
+		'SERIES_NAME':[],
+		'Year':[],
 		'Sign':[],
 		'Exact':[]
 	}
@@ -722,24 +576,31 @@ def load_fwtw_relationships():
 						data['Holder'].append(Holder)
 						data['Instrument'].append(instrument)
 						data['Sign'].append(sign)
-						data['Series_Name'].append(series)
+						data['SERIES_NAME'].append(series)
 						data['Exact'].append(exact)
-						data['Date'].append(f'{year}-12-31')
+						data['Year'].append(year)
 	df = pd.DataFrame(data)
-	df.loc[~df.Series_Name.isin(['0', 'nan']), 'Series_Name'] = 'FL' + df.Series_Name + '.A'
-	df = df[~((df.Series_Name=='nan')&((df.Issuer=='All Sectors')|(df.Holder=='All Sectors')))]
+	df.loc[~df.SERIES_NAME.isin(['0', 'nan']), 'SERIES_NAME'] = 'FL' + df.SERIES_NAME + '.A'
+	df = df[~((df.SERIES_NAME=='nan')&((df.Issuer=='All Sectors')|(df.Holder=='All Sectors')))]
 	return df
 
-def unveil_flow_of_funds():
+def main():
+
+	# 0. Load flow of funds data, which will be used several times
+	fof = get_fof()
+
 	# 1. Load FWTW relationships between intermediaries
 	print('Step 1:')
 	fwtw_relationships = load_fwtw_relationships()
 	fwtw_relationships.to_csv(os.path.join(working_folder, 'fwtw_relationships.csv'), index=False)
 
+	fwtw_relationships = pd.read_csv(os.path.join(working_folder, 'fwtw_relationships.csv'))
+
 	# 2. Fill missing values in matrix using algorithm
 	print('Step 2:')
-	fwtw_matrix = fill_fwtw_matrix(fwtw_relationships)
+	fwtw_matrix = fill_fwtw_matrix(fwtw_relationships, fof)
 	fwtw_matrix.to_csv(os.path.join(working_folder, 'fwtw_matrix.csv'), index=False)
+
 
 	# 3. Run unveiling algorithm
 	print('Step 3:')
@@ -748,10 +609,13 @@ def unveil_flow_of_funds():
 	unveiled_by_instrument.to_csv(os.path.join(clean_folder, 'unveiled_by_instrument.csv'), index=False)
 
 	# 4. Map to wealth percentiles
+
+	unveiled_by_instrument = load_data('unveiled_by_instrument.csv')
 	print('Step 4:')
-	dina_unveiled, dfa_unveiled = map_to_wealth_percentiles(unveiled_by_instrument)
+	dina_unveiled, dfa_unveiled = map_to_wealth_percentiles_wrapper(unveiled_by_instrument, fof)
 	dina_unveiled.to_csv(os.path.join(clean_folder, 'dina_unveiled.csv'), index=False)
 	dfa_unveiled.to_csv(os.path.join(clean_folder, 'dfa_unveiled.csv'), index=False)
 
 
-unveil_flow_of_funds()
+if __name__=="__main__":
+	main()

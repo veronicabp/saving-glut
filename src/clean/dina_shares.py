@@ -1,3 +1,5 @@
+import sys
+sys.path.append('')
 from utils import * 
 
 def collapse_dina(tag='', sort='wealth', variables=['taxbond', 'currency','equity','bus','pens','muni', 'ownerhome', 'ownermort', 'nonmort', 'poinc','gov_surplus','gov_consumption']):
@@ -31,10 +33,14 @@ def collapse_dina(tag='', sort='wealth', variables=['taxbond', 'currency','equit
 
 	df.to_csv(os.path.join(working_folder, f'dina{tag}_{sort}sort.csv'), index=False)
 
+def main():
+	i = 1
+	for tag in ['', 'psz']:
+		for sort in ['wealth', 'poinc']:
+			collapse_dina(tag=tag, sort=sort)
+			print(f'Saved {i}.')
+			i += 1
 
-i = 1
-for tag in ['', 'psz']:
-	for sort in ['wealth', 'poinc']:
-		collapse_dina(tag=tag, sort=sort)
-		print(f'Saved {i}.')
-		i += 1
+if __name__=="__main__":
+	main()
+

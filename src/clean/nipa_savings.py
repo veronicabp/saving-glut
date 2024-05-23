@@ -1,3 +1,5 @@
+import sys
+sys.path.append('')
 from utils import * 
 
 def load_cbo():
@@ -11,20 +13,31 @@ def load_cbo():
     return cbo
 
 def get_consumption(df, base_year=2010, tag='DINA'):
-    # Get average consumption shares from Fisher data
+    # Get consumption-to-income ratio in 2010
     fisher = pd.read_stata(os.path.join(raw_folder, 'fisher', 'Yfisherfinal.dta')).rename(columns={'year':'Year'})
     fisher = fisher[fisher.Year>=2004] # Keep post-2004 shares
     fisher = pd.melt(fisher, id_vars=['Year'], value_vars=['fisher1', 'fisher9', 'fisher90'],var_name='Percentile', value_name='value')
     fisher['Percentile'] = fisher['Percentile'].str.extract('(\d+)').astype(int)
-    fisher = fisher.groupby('Percentile').mean()['value']
+    fisher = fisher.groupby('Percentile').mean()['value'].reset_index().rename(columns={'value':'cons_share'})
 
-    # Assume consumption-to-income shares are constant over time
-    base_year_income = df[df['Year']==base_year].set_index('Percentile')[f'{tag}income']
-    base_year_consumption = df[df['Year']==base_year]['PersConsEx'].mean()
-        
-    df[f'{tag}consumption'] = df.apply(lambda row: fisher[row['Percentile']] * base_year_consumption * row[f'{tag}income']/base_year_income[row['Percentile']], axis=1)
-    df[f'{tag}consumption2NI'] = df[f'{tag}consumption']/df['NationalInc']
-    
+    c2i = fisher.merge(df[df.Year==2010][['Percentile',f'{tag}income','PersConsEx']], on='Percentile')
+    c2i['cons2inc'] = c2i.PersConsEx * c2i.cons_share / c2i[f'{tag}income']
+    c2i = c2i.set_index('Percentile')['cons2inc']
+
+    # Pivot to get consumption for each percentile
+    pivot = df.pivot_table(values=f'{tag}income', index=['Year', 'PersConsEx'], columns='Percentile').reset_index().rename(columns={p: f'{tag}income{p}' for p in [1,9,90]})
+
+    # Assume constant consumption-to-income ratio for top 10
+    for p in [1,9]:
+        pivot[f'{tag}consumption{p}'] = c2i[p] * pivot[f'{tag}income{p}']
+
+    # Set consumption of bottom 90 as residual
+    pivot[f'{tag}consumption90'] = pivot['PersConsEx'] - pivot[f'{tag}consumption1'] - pivot[f'{tag}consumption9']
+
+    # Merge back with other data
+    unpivot = pd.wide_to_long(pivot, [f'{tag}income', f'{tag}consumption'], i='Year', j='Percentile').reset_index().drop(columns=['PersConsEx',f'{tag}income'])
+    df = df.merge(unpivot, on=['Year', 'Percentile'], how='outer')
+
     return df
 
 def main():
@@ -55,4 +68,5 @@ def main():
 	df = df[['Year', 'Percentile', 'DINAsaving2NI', 'CBOsaving2NI']]
 	df.to_csv(os.path.join(clean_folder, 'nipa_savings.csv'), index=False)
 
-main()
+if __name__=="__main__":
+    main()

@@ -7,6 +7,8 @@ from tabulate import tabulate
 import re 
 import statsmodels.api as sm
 from scipy.interpolate import interp1d
+import time
+import subprocess
 
 # Deal with warnings
 import warnings
@@ -130,6 +132,10 @@ def get_fof():
 
     return df
 
+def load_national_income():
+	natinc = load_nipa_tables()[['Year','NationalInc']]
+	return natinc
+
 def get_mufu_split():
 	full_df = pd.read_csv(os.path.join(raw_folder, 'fof', 'fof.csv'))
 	df = full_df[(full_df.FREQ==203)&(full_df.SERIES_PREFIX=='LM')].copy()
@@ -217,7 +223,11 @@ def load_nipa_tables():
                                                     - nipa['GovContribToSSI'] - nipa['GovAssetInc']
                                                     - nipa['GovCurrTransferReceipts'])
     nipa['GovSaving'] = -1*nipa['GovDeficit']
-    
+
+    nipa['NetExGoodsAndServicesROW'] = -nipa['NetExGoodsAndServices'] + nipa['ROW']
+    nipa['NetInvDomestic'] = nipa['GrossInvDomestic'] - nipa['ConsFixedCap']
+
+    for col in nipa.columns[1:]:
+    	nipa[f'{col}2NI'] = nipa[col]/nipa['NationalInc']
+
     return nipa
-
-
