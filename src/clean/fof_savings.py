@@ -104,10 +104,10 @@ def get_ira_liab_shares(df):
 		'FL573020033.A':'Checkable Deposits And Currency',
 		'FL573030033.A':'Time And Savings Deposits',
 		'FL573034055.A':'Money Market Fund Shares',
-		'LM573061133.A':'Agency- and GSE-Backed Securities',
-		'FL573061733.A':'Corporate And Foreign Bonds',
-		'FL573063033.A':'Home Mortgages',
-		'FL573065033.A':'Treasury Securities',
+		'FL573061733.A':'Agency- and GSE-Backed Securities',
+		'FL573063033.A':'Corporate And Foreign Bonds',
+		'FL573065033.A':'Home Mortgages',
+		'FL573061133.A':'Treasury Securities',
 		'LM573064133.A':'Corporate Equities',
 		'LM573064255.A':'Mutual Fund Shares'
 	}
@@ -123,6 +123,7 @@ def get_ira_liab_shares(df):
 	for col in mufu_cols:
 		df[f'Mutual Fund Shares; {col}'] = df['Mutual Fund Shares'] * df[col]
 		df = df.drop(columns=col)
+	df = df.drop(columns='Mutual Fund Shares')
 
 	df['Total'] = df[[col for col in df.columns if col!='Year']].sum(axis=1)
 	for col in df.columns:
@@ -135,7 +136,6 @@ def get_ira_liab_shares(df):
 
 def get_subcategory_shares(fof):
 	fof_pivot = fof.pivot(index='Year', columns='SERIES_NAME', values='Amount').reset_index()
-
 	dfs = []
 	funcs = [get_mufu_shares,get_mmf_shares,get_pension_shares,get_life_insurance_shares,get_ira_asset_shares,get_ira_liab_shares]
 	for i, asset in enumerate(['Mutual Fund Shares', 'Money Market Fund Shares', 'Pension Entitlements', 'Life Insurance Reserves', 'IRA', 'IRA Liabs']):
@@ -156,7 +156,7 @@ def get_subcategory_shares(fof):
 	return pd.concat(dfs)
 
 
-def get_inflation():
+def get_inflation(percentiles=[90,99,100], percentile_labels=[90,9,1]):
 	# Housing price gain
 	JST = pd.read_stata(os.path.join(raw_folder, 'JST', 'JSTdatasetR6.dta'))
 	JST = JST[JST.country=='USA'][['year', 'housing_capgain']].rename(columns={'year':'Year', 'housing_capgain':'Asset Inflation Rate'})
@@ -164,7 +164,7 @@ def get_inflation():
 
 	# Expand to include every percentile
 	JST_list = []
-	for p in [1,9,90]:
+	for p in percentile_labels:
 		temp = JST.copy()
 		temp['Percentile'] = p 
 		JST_list.append(temp)
@@ -175,8 +175,8 @@ def get_inflation():
 
 	callreport_list = []
 	for cat in ['cdebt','mdebt']:
-		for p in [1,9,90]:
-			if p<90:
+		for i, p in enumerate(percentile_labels):
+			if percentiles[i]>90:
 				pgroup=10
 			else:
 				pgroup=90
@@ -188,17 +188,30 @@ def get_inflation():
 	callreport['Asset Inflation Rate'] *= -1
 
 	years = sorted(JST.Year.unique())
-	zeros = pd.DataFrame({'Year':years*3, 'Inflation Category':['ZERO']*len(years)*3, 'Percentile':[1]*len(years) + [9]*len(years) + [90]*len(years), 'Asset Inflation Rate':[0]*len(years)*3})
+	zeros = pd.DataFrame({'Year':years*len(percentile_labels), 'Inflation Category':['ZERO']*len(years)*len(percentile_labels), 'Percentile':[p for p in percentile_labels for _ in years], 'Asset Inflation Rate':[0]*len(years)*len(percentile_labels)})
 
 	return pd.concat([JST, callreport, zeros])
 
-def load_dina(mappings):
+def load_dina(mappings, dinafile='dina_hwealsort.csv'):
 	# Load dina and reshape long
-	dina = pd.read_csv(os.path.join(working_folder, 'dina_wealthsort.csv'))
+	dina = pd.read_csv(os.path.join(working_folder, dinafile))
 	dina_categories = list(mappings['DINA Category'].unique())
 	dina = dina[['Year','Percentile']+dina_categories]
 	dina['Year'] = dina['Year'].astype(int)
 	dina = pd.melt(dina, id_vars=['Year', 'Percentile'], value_vars=dina_categories, var_name='DINA Category', value_name='Percentile Share')
+
+	# Get missing combinations
+	years = dina['Year'].unique()
+	percentiles = dina['Percentile'].unique()
+	categories = dina['DINA Category'].unique()
+
+	# Create a MultiIndex with all possible combinations
+	multi_index = pd.MultiIndex.from_product([years, percentiles, categories], names=['Year', 'Percentile', 'DINA Category'])
+
+	# Reindex the original dataframe to the MultiIndex
+	dina.set_index(['Year', 'Percentile', 'DINA Category'], inplace=True)
+	dina = dina.reindex(multi_index).reset_index()
+
 	return dina
 
 def load_data_sets():
@@ -207,25 +220,20 @@ def load_data_sets():
 
 	# Metadata for FOF series
 	mappings = pd.read_csv(os.path.join(raw_folder, 'personal', 'fof_distributional_relations.csv'))
-	
-	dina = load_dina(mappings)
 
 	# Subdistribution of series
 	subcategory_shares = get_subcategory_shares(fof)
 
-	# Asset inflation rates
-	inflation = get_inflation()
+	return fof, mappings, subcategory_shares
 
-	return fof, mappings, dina, subcategory_shares, inflation
-
-def calculate_savings_inflation(df):
+def calculate_savings_inflation(df, percentile_labels=[90,9,1]):
 
 	# First, calculate saving and valuation gains for those where inflation is known
 	df.loc[~df['Asset Inflation Rate'].isna(), 'Saving'] = df['Amount'] - (1+df['Asset Inflation Rate'])*df['L_Amount']
 
 	# Collapse
 	df['Missing Inflation'] = df['Inflation Category'] == 'OTH'
-	df = df.groupby(['Percentile', 'Missing Inflation', 'Year'])[['Amount','L_Amount','Saving']].sum().reset_index()
+	df = df.groupby(['Percentile', 'Missing Inflation', 'Year'])[['Amount','L_Amount','Saving']].agg(sum_with_nan).reset_index()
 
 	# Reshape Wide
 	df = pd.pivot_table(df, values=['Amount','L_Amount','Saving'], index=['Year'], columns=['Missing Inflation', 'Percentile']).reset_index()
@@ -243,25 +251,30 @@ def calculate_savings_inflation(df):
 	# Store inflation 
 	inflation_oth = df['inflation_oth'].reset_index()
 
-	for p in [1,9,90]:
-		df[f'FOFsaving2NI{p}'] = (df['Saving'][False][p] + df['Amount'][True][p] - (1+df['inflation_oth'])*df['L_Amount'][True][p])/df['NationalInc']
+	new_cols = ['FOFsaving','d_Wealth','Valuation']
+	for p in percentile_labels:
+		df[f'FOFsaving{p}'] = (df['Saving'][False][p] + df['Amount'][True][p] - (1+df['inflation_oth'])*df['L_Amount'][True][p])
 
 		# Also calculate valuation gains
-		df[f'd_Wealth2NI{p}'] = ((df['Amount'][True][p]+df['Amount'][False][p]) - (df['L_Amount'][True][p]+df['L_Amount'][False][p]))/df['NationalInc']
-		df[f'Valuation2NI{p}'] = df[f'd_Wealth2NI{p}']-df[f'FOFsaving2NI{p}']
+		df[f'd_Wealth{p}'] = ((df['Amount'][True][p]+df['Amount'][False][p]) - (df['L_Amount'][True][p]+df['L_Amount'][False][p]))
+		df[f'Valuation{p}'] = df[f'd_Wealth{p}']-df[f'FOFsaving{p}']
 
-	df = df[[col for col in df.columns if col[0].endswith('1') or col[0].endswith('9') or col[0].endswith('90')]]
+		for col in new_cols:
+			df[f'{col}2NI{p}'] = df[f'{col}{p}']/df['NationalInc']
+
 	df.columns = df.columns.get_level_values(0)
+	new_cols = [f'{col}{tag}' for col in new_cols for tag in ['', '2NI']]
+	df =  df[[f'{col}{p}' for col in new_cols for p in percentile_labels]]
 	df = df.reset_index()
 
-	df = pd.wide_to_long(df, stubnames=['FOFsaving2NI','d_Wealth2NI','Valuation2NI'], i=['Year'], j='Percentile').reset_index()
+	df = pd.wide_to_long(df, stubnames=new_cols, i=['Year'], j='Percentile').reset_index()
 
 	return df, inflation_oth
 
-def main():
+def calculate_savings_by_percentile(fof, mappings, subcategory_shares, dinafile='dina_hwealsort.csv', tag='', percentiles=[90,99,100], percentile_labels=[90,9,1]):
 
-	# Load data sets
-	fof, mappings, dina, subcategory_shares, inflation = load_data_sets()
+	dina = load_dina(mappings, dinafile=dinafile)
+	inflation = get_inflation(percentiles=percentiles, percentile_labels=percentile_labels)
 
 	# Merge and clean datasets
 	df = construct_new_series(fof, mappings)
@@ -294,8 +307,8 @@ def main():
 	df = df[df.Year>=1963]
 
 	# Calculate savings + residual inflation:
-	tot_sav, inflation_oth = calculate_savings_inflation(df.copy())
-	tot_sav.to_csv(os.path.join(clean_folder, 'fof_savings.csv'), index=False)
+	tot_sav, inflation_oth = calculate_savings_inflation(df.copy(), percentile_labels=percentile_labels)
+	tot_sav.to_csv(os.path.join(clean_folder, f'fof_savings{tag}.csv'), index=False)
 
 	# Calculate savings for each asset
 	df = df.merge(inflation_oth, on='Year')
@@ -311,7 +324,24 @@ def main():
 	df.loc[df['Asset Name']=='Real Estate', 'Asset Type'] = 'Real Estate'
 	df.loc[df['Asset Type'].isna(), 'Asset Type'] = 'Financial Asset'
 
-	df.to_csv(os.path.join(clean_folder, 'fof_savings_by_asset.csv'), index=False)
+	df.to_csv(os.path.join(clean_folder, f'fof_savings_by_asset{tag}.csv'), index=False)
+
+def main():
+
+	# Load data sets
+	fof, mappings, subcategory_shares = load_data_sets()
+	save_data(subcategory_shares, 'subcategory_shares.csv')
+
+	# Main results 
+	calculate_savings_by_percentile(fof, mappings, subcategory_shares)
+
+	# For each percentile group
+	calculate_savings_by_percentile(fof, mappings, subcategory_shares, dinafile='dina_hwealsort_100.csv', tag='_p100', percentiles=np.linspace(1,100,100), percentile_labels=np.arange(100)+1)
+
+	# More granular split
+	quantiles = np.round(np.concatenate((np.linspace(1,99,99),np.linspace(99.2,100,5))),2)
+	calculate_savings_by_percentile(fof, mappings, subcategory_shares, dinafile='dina_hwealsort_granular.csv', tag='_granular', percentiles=quantiles, percentile_labels=quantiles)
+
 
 if __name__=="__main__":
 	main()

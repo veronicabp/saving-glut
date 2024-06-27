@@ -610,7 +610,6 @@ def main():
 
 	# 4. Map to wealth percentiles
 
-	unveiled_by_instrument = load_data('unveiled_by_instrument.csv')
 	print('Step 4:')
 	dina_unveiled, dfa_unveiled = map_to_wealth_percentiles_wrapper(unveiled_by_instrument, fof)
 	dina_unveiled.to_csv(os.path.join(clean_folder, 'dina_unveiled.csv'), index=False)
