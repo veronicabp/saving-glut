@@ -4,6 +4,10 @@ from utils import *
 from fof_savings import *
 
 def get_unfunded_pension_wealth():
+	'''
+	Function to load unfunded pension wealth as described in text
+	'''
+
 	df = pd.read_stata(os.path.join(raw_folder, 'fof', 'LQpanel_2022Q2.dta'))
 	df['date'] = pd.to_datetime(df['quarter'])
 	df['Year'] = df.date.dt.year
@@ -13,6 +17,9 @@ def get_unfunded_pension_wealth():
 	return df[['Year','finact_pens','finact_pens_uf']]
 	
 def load_dfa(mappings):
+	'''
+	Function to load DFA data on asset holdings by wealth percentile
+	'''
 	file = os.path.join(raw_folder, 'dfa', 'dfa-networth-levels-detail.csv')
 	df = pd.read_csv(file)
 
@@ -47,6 +54,9 @@ def load_dfa(mappings):
 	return df
 
 def map_to_wealth_percentiles(df, shares=None, name='DINA', relations=dina_relations):
+	'''
+	Function to map FOF wealth data to percentile holdings and aggregate at the percentile level
+	'''
 	df = df.merge(shares, on=[f'{name} Category','Year'])
 
 	df.rename(columns={'Amount':'Total Amount'}, inplace=True)
@@ -60,6 +70,9 @@ def map_to_wealth_percentiles(df, shares=None, name='DINA', relations=dina_relat
 	return df
 
 def map_to_wealth_percentiles_wrapper(unveiled_by_instrument, fof):
+	'''
+	Function to get wealth data at the percentile level, based on both DINA and DFA data on percentile shares of asset holdings
+	'''
 
 	# Load useful datasets 
 	mappings = pd.read_csv(os.path.join(raw_folder, 'personal', 'fof_distributional_relations.csv'))
@@ -96,6 +109,9 @@ def map_to_wealth_percentiles_wrapper(unveiled_by_instrument, fof):
 	return results[0], results[1]
 
 def make_net(df, category='Rest of World'):
+	'''
+	Function to calculate net asset holdings for a particular sector that issues and holds US wealth
+	'''
 	for year in tqdm(df.Year.unique()):
 		for sector in df.Holder.unique():
 			issuer_series = (df.Issuer==category)&(df.Holder==sector)&(df.Year==year)
@@ -114,6 +130,10 @@ def make_net(df, category='Rest of World'):
 	return df
 
 def construct_Omega(df, m=0, k=0, p=0, sectors=[], epsilon=1e-3):
+	'''
+	Function to construct a matrix detailing the share of debt issued by each intermediary and held directly or indirectly by final asset owners
+	'''
+
 	# Create M matrix
 	M = np.zeros((p,p))
 	for i, issuer in enumerate(sectors):
@@ -134,6 +154,9 @@ def construct_Omega(df, m=0, k=0, p=0, sectors=[], epsilon=1e-3):
 	return Omega
 
 def construct_direct_holdings(df, d1=0, d2=0, issuers=[], holders=[]):
+	'''
+	Function to construct a matrix of direct holdings of primary assets by final holders
+	'''
 	M = np.zeros((d1, d2))
 	for i, issuer in enumerate(issuers):
 		for j, holder in enumerate(holders):
@@ -143,6 +166,10 @@ def construct_direct_holdings(df, d1=0, d2=0, issuers=[], holders=[]):
 	return M
 
 def construct_matrices(df, primary_assets=['Households and Nonprofit Organizations', 'Federal Government', 'Nonfinancial Non-Corporate Business', 'Nonfinancial Corporate Business', 'Non-Financial Assets'], final_holders=['Households and Nonprofit Organizations', 'Rest of World', 'Federal Government', 'State and Local Governments']):
+	'''
+	Function to construct the main matrices necessary to run the unveiing exercise
+	'''
+
 	intermediaries = list((set(df.Issuer.unique()) | set(df.Holder.unique()))-set(final_holders)) 
 	sectors = intermediaries + final_holders # Sort so that final holders are at the end
 	
@@ -158,6 +185,10 @@ def construct_matrices(df, primary_assets=['Households and Nonprofit Organizatio
 	return Omega, D, W
 
 def get_level(df, primary_assets=['Households and Nonprofit Organizations', 'Federal Government', 'Nonfinancial Non-Corporate Business', 'Nonfinancial Corporate Business', 'Non-Financial Assets'], final_holders=['Households and Nonprofit Organizations', 'Rest of World', 'Federal Government', 'State and Local Governments']):
+	'''
+	Function to extract the level of debt issued for each primary asset
+	'''
+
 	n = len(primary_assets)
 	
 	L = np.zeros((n, 1))
@@ -179,9 +210,15 @@ def get_level(df, primary_assets=['Households and Nonprofit Organizations', 'Fed
 	return L
 
 def calculate_A(Omega, D, W):
+	'''
+	Function to calculate a matrix containing the share of each primary asset that can be traced to each final asset holder
+	'''
 	return np.matmul(W, Omega) + D
 
 def unveil(df, primary_assets=[], final_holders=[]):
+	'''
+	Function to unveil wealth holdings in each year
+	'''
 	dfs = []
 	for year in tqdm(sorted(df.Year.unique())):
 		Omega, D, W = construct_matrices(df[df.Year==year], primary_assets=primary_assets, final_holders=final_holders)
@@ -201,6 +238,10 @@ def unveil(df, primary_assets=[], final_holders=[]):
 	return pd.concat(dfs)
 
 def unveil_wrapper(fwtw_matrix, primary_assets=['Households and Nonprofit Organizations', 'Federal Government', 'Nonfinancial Non-Corporate Business', 'Nonfinancial Corporate Business', 'Non-Financial Assets'], final_holders=['Households and Nonprofit Organizations', 'Rest of World', 'Federal Government', 'State and Local Governments']):
+	'''
+	Wrapper function to prepare data for unveiling algorithm and apply the algorithm. First, the algorithm is run fully to get total wealth of each type held by each sector. Next, the algorithm is adjusted to get the instruments through which wealth is held.
+	'''
+
 	fwtw_matrix = fwtw_matrix[fwtw_matrix.Holder!='Instrument Discrepancies Sector'] # Remove discrepancies sector
 	fwtw_matrix = fwtw_matrix.groupby(['Issuer', 'Holder', 'Instrument', 'Year']).mean()['Amount'].reset_index()
 	df = fwtw_matrix.groupby(['Issuer', 'Holder', 'Year']).sum()['Amount'].reset_index()
@@ -261,6 +302,9 @@ def unveil_wrapper(fwtw_matrix, primary_assets=['Households and Nonprofit Organi
 	return output, output_by_instrument
 
 def redistribute_rows(matrix, constrained, row_totals_sub, col_totals_sub):
+	'''
+	Function to re-scale matrix so that columns sum to total
+	'''
 	discrepancy = np.sum(matrix, axis=0) - col_totals_sub
 
 	# Create proportions by which to scale rows
@@ -275,6 +319,9 @@ def redistribute_rows(matrix, constrained, row_totals_sub, col_totals_sub):
 	return matrix, np.abs(adjustment).max()
 
 def redistribute_cols(matrix, constrained, row_totals_sub, col_totals_sub):
+	'''
+	Function to re-scale matrix so that rows sum to total
+	'''
 	discrepancy = np.sum(matrix, axis=1) - row_totals_sub
 
 	# Create proportions by which to scale rows
@@ -291,6 +338,9 @@ def redistribute_cols(matrix, constrained, row_totals_sub, col_totals_sub):
 	return matrix, np.abs(adjustment).max()
 
 def fill_matrix(row_totals, col_totals, known, constrained, niter=1000):
+	'''
+	Function to fill unknown elements of a matrix semi-proportionately so that known cells and column/row totals are satisfied
+	'''
 
 	n = len(row_totals)
 	m = len(col_totals)
@@ -338,12 +388,18 @@ def fill_matrix(row_totals, col_totals, known, constrained, niter=1000):
 	return matrix
 
 def fill_proportionately(row_totals, col_totals):
+	'''
+	Function to fill a matrix proportionately so that row and column totals match known vectors
+	'''
 	n = len(row_totals)
 	m = len(col_totals)
 	matrix = np.array([[row_totals[i] * col_totals[j] / row_totals.sum() for j in range(m)] for i in range(n)])
 	return matrix
 
 def normalize_duplicates(sub):
+	'''
+	Function to distribute fields which should be applied to multiple cells
+	'''
 	# For the data in the middle of the matrix, if a single series belongs to multiple columns, asign it proportionally
 	dup = sub[(~sub.Exact)&(sub.Sign=='Positive')]
 	dup = dup[dup.duplicated(subset='SERIES_NAME')]
@@ -366,6 +422,9 @@ def normalize_duplicates(sub):
 	return sub
 
 def rescale_interior(sub, issuers, holders, row_totals, col_totals):
+	'''
+	Function to rescale columns that sum to more than the known total
+	'''
 	# If the middle of the matrix sums up to more than the total, re-scale appropriately (this really only happens for ABS corporate bonds -- need to figure out why) 
 	for i, issuer in enumerate(issuers):
 		tot = col_totals[i]
@@ -385,6 +444,9 @@ def rescale_interior(sub, issuers, holders, row_totals, col_totals):
 	return sub
 
 def create_helper_matrices(sub, issuers, holders):
+	'''
+	Function to create matrices with known cell values
+	'''
 	n = len(holders)
 	m = len(issuers)
 		
@@ -399,6 +461,9 @@ def create_helper_matrices(sub, issuers, holders):
 	return known, constrained
 
 def create_matrix(df):
+	'''
+	Function to create matrices of liabilities issued and held by each sector through each instrument, subject to the proportionality assumption described in the text as well as to known constraints
+	'''
 	output = df.groupby(['Issuer', 'Holder', 'Instrument','Year']).sum()['Amount'].reset_index()
 	proportional_output = output.copy()
 	allocated_columwise = output.copy()
@@ -442,7 +507,9 @@ def create_matrix(df):
 	return output, proportional_output, allocated_columwise
 
 def fill_fwtw_matrix(relationships, full_df):
-	# Load values
+	'''
+	Function to get missing relationships between lenders/borrowers/instruments for each year. Prepares data and applies `create_matrix' to each year
+	'''
 	
 	full_df['Amount'] = pd.to_numeric(full_df['Amount'], errors='coerce')
 	full_df['Amount'] = full_df['Amount']/1000 # Units in billions of USD
@@ -481,6 +548,9 @@ def fill_fwtw_matrix(relationships, full_df):
 	return output
 
 def load_fwtw_relationships():
+	'''
+	Function to load known relationships between flow of funds sectors and store in a DataFrame
+	'''
 
 	# Store all excel sheets
 	file = os.path.join(raw_folder, 'fof', 'my_fwtw_templates.xlsx')

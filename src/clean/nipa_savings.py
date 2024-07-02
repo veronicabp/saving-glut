@@ -3,6 +3,10 @@ sys.path.append('')
 from utils import * 
 
 def load_cbo():
+    '''
+    Function to load CBO data on income
+    '''
+
     cbo = pd.read_excel(os.path.join(raw_folder, 'cbo', '58353-supplemental-data.xlsx'), sheet_name='10. Household Income Shares', header=10, skiprows=range(11,98), skipfooter=6)
     cbo.rename(columns={'Top 1 Percent':1, 'Year':'Year'}, inplace=True)
     cbo[9] = cbo['91st to 95th Percentiles'] + cbo['96th to 99th Percentiles']
@@ -13,6 +17,10 @@ def load_cbo():
     return cbo
 
 def get_consumption(df, base_year=2010, tag='DINA'):
+    '''
+    Function to calculate consumption by percentiles given certain assumptions
+    '''
+
     # Get consumption-to-income ratio in 2010
     fisher = pd.read_stata(os.path.join(raw_folder, 'fisher', 'Yfisherfinal.dta')).rename(columns={'year':'Year'})
     fisher = fisher[fisher.Year>=2004] # Keep post-2004 shares

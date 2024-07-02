@@ -86,6 +86,7 @@ dfa_relations = {
 	'Time deposits and short-term investments - dfa': ['Time and Savings Deposits']
 }
 
+
 def weighted_quantile(values, weights, quantiles):
     sorter = np.argsort(values)
     values = values[sorter]
@@ -165,57 +166,6 @@ def load_national_income():
 	natinc = load_nipa_tables()[['Year','NationalInc']]
 	return natinc
 
-def get_mufu_split():
-	full_df = pd.read_csv(os.path.join(raw_folder, 'fof', 'fof.csv'))
-	df = full_df[(full_df.FREQ==203)&(full_df.SERIES_PREFIX=='LM')].copy()
-
-	df['TIME_PERIOD'] = pd.to_datetime(df['TIME_PERIOD'])
-	df['Year'] = df.TIME_PERIOD.dt.year
-	df['SERIES_NAME'] = df['SERIES_NAME'].str.replace('.','').str.lower()
-
-	df = df[['SERIES_NAME','Year','OBS_VALUE']]
-	df = df.pivot(index='Year', columns='SERIES_NAME', values='OBS_VALUE').reset_index()
-
-	# Add new calculated columns
-	df['a_mufu_equ_sh'] = (df['lm654091600a'] + df['lm654092603a']) / (df['lm654090000a'] - df['lm654091403a'])
-	df['a_mufu_bnd_sh'] = (df['lm654091303a'] + df['lm654091203a'] - df['lm653062003a']) / (df['lm654090000a'] - df['lm654091403a'])
-	df['a_mufu_mun_sh'] = df['lm653062003a'] / (df['lm654090000a'] - df['lm654091403a'])
-
-	# Normalize to sum to 1
-	total_sh = df['a_mufu_equ_sh'] + df['a_mufu_bnd_sh'] + df['a_mufu_mun_sh']
-	df['a_mufu_equ_sh'] /= total_sh
-	df['a_mufu_bnd_sh'] /= total_sh
-	df['a_mufu_mun_sh'] /= total_sh
-
-	# Interpolate in missing years
-	df['temp'] = df['lm653064100a']/df['lm654090000a']
-
-	# Filter out rows where either 'a_mufu_equ_sh' or 'temp' is NaN
-	df_for_interp = df[df[['a_mufu_equ_sh', 'temp']].notna().all(axis=1)]
-
-	# Sort data by 'temp' if not already sorted; important for interpolation
-	df_for_interp = df_for_interp.sort_values('temp')
-
-	# Create interpolation function
-	interp_func = interp1d(df_for_interp['temp'], df_for_interp['a_mufu_equ_sh'], kind='linear', fill_value='extrapolate')
-
-	# Apply the interpolation function to the full range of 'temp' in original DataFrame
-	df['a_mufu_equ_sh_ipol'] = interp_func(df['temp'])
-
-	# Replace original column with interpolated values where original is missing
-	df.loc[df['a_mufu_equ_sh'].isnull(), 'a_mufu_equ_sh'] = df['a_mufu_equ_sh_ipol']
-
-	df['temp2'] = (df['a_mufu_bnd_sh'] / (df['a_mufu_mun_sh'] + df['a_mufu_bnd_sh'])).mean()
-	# Conditional replacements
-	df.loc[df['a_mufu_bnd_sh'].isnull(), 'a_mufu_bnd_sh'] = (1 - df['a_mufu_equ_sh']) * df['temp2']
-
-	# Update 'a_mufu_mun_sh' based on new 'a_mufu_bnd_sh'
-	df['a_mufu_mun_sh'] = 1 - df['a_mufu_bnd_sh'] - df['a_mufu_equ_sh']
-
-	df = df[['Year', 'a_mufu_equ_sh', 'a_mufu_bnd_sh', 'a_mufu_mun_sh']]
-
-	return df, {'Equity':'equ', 'Bond':'bnd', 'Municipal':'mun'}
-
 def load_nipa_table(file_name):
 	# Read from csv
 	df = pd.read_csv(file_name, skiprows=3, index_col=2).drop(columns=['Line','Unnamed: 1'])
@@ -263,7 +213,6 @@ def load_nipa_tables():
 		nipa[f'{col}2NI'] = nipa[col]/nipa['NationalInc']
 
 	return nipa
-
 
 def sum_with_nan(series):
     if series.isnull().any():

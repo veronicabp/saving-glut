@@ -14,7 +14,7 @@ def run_python(file, folder='clean'):
 	print(f'>>Time Elapsed: {np.round(end-start)} seconds.')
 
 
-run_python('dina_shares.py')
-run_python('nipa_savings.py')
-run_python('fof_savings.py')
+# run_python('dina_shares.py')
+# run_python('nipa_savings.py')
+# run_python('fof_savings.py')
 run_python('unveiling.py')

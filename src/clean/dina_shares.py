@@ -3,6 +3,16 @@ sys.path.append('')
 from utils import * 
 
 def collapse_dina(filename='dina.csv', tag='', sort='hweal', variables=['taxbond', 'currency','equity','bus','fi','pens','muni', 'ownerhome', 'ownermort', 'nonmort', 'poinc','peinc','dicsh','gov_surplus','gov_consumption'], bins=np.array([.9, .99, 1]), labels=np.array([90, 9, 1])):
+	'''
+	Function to collapse DINA data on wealth and income and aggregate at the percentile level
+
+	filename (str)			: name of collapsed output file
+	tag (str)				: indicates which version of the DINA data should be used
+	sort (str)				: indicates whether percentiles should be sorted by wealth or income
+	variables (list[str])	: list of variables to keep
+	bins (np.array)			: array of percentiles to create
+	labels (np.array)		: names of percentile bins
+	'''
 	file = os.path.join(raw_folder, 'dina', f'usdina19622019{tag}.dta')
 	df = pd.read_stata(file)
 
@@ -44,6 +54,7 @@ def collapse_dina(filename='dina.csv', tag='', sort='hweal', variables=['taxbond
 	df.to_csv(os.path.join(working_folder, filename), index=False)
 
 def main():
+	# Collapse DINA data (both regular and PSZ version) by wealth and income percentiles
 	i = 1
 	for tag in ['', 'psz']:
 		for sort in ['hweal', 'poinc']:
@@ -52,12 +63,13 @@ def main():
 			print(f'Saved {i}.')
 			i += 1
 
-	# More granular splits
+	# Collapse into 100 bins
 	quantiles = np.linspace(1,100,100)
 	collapse_dina(filename='dina_hwealsort_100.csv',tag='', sort='hweal', bins=quantiles, labels=quantiles)
 	print(f'Saved {i}.')
 	i+=1
 
+	# Separate the top 1% into 5 bins
 	quantiles = np.concatenate((np.linspace(1,99,99),np.linspace(99.2,100,5)))
 	collapse_dina(filename='dina_hwealsort_granular.csv',tag='', sort='hweal', bins=quantiles, labels=quantiles)
 	print(f'Saved {i}.')

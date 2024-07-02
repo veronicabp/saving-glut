@@ -3,6 +3,12 @@ sys.path.append('')
 from utils import *
 
 def construct_new_series(fof, mappings):
+	'''
+	Function to construct a new FOF varible based on two other existing variables
+
+	fof (pd.DataFrame)		: DataFrame with Flow of Funds data
+	mappings (pd.DataFrame)	: DataFrame with new variables to be constructed
+	'''
 	# Construct series when they do not exist 
 	for series in mappings.SERIES_NAME.unique():
 		if '-' in series:
@@ -20,6 +26,11 @@ def construct_new_series(fof, mappings):
 	return fof
 
 def get_mufu_shares(df):
+	'''
+	Function to allocate mutual fund wealth to the different types of mutual funds (equity, bonds, and municipal bonds)
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	# Set missing as nan (which are recorded as zeros)
 	df.replace(0, np.nan, inplace=True)
 
@@ -63,6 +74,11 @@ def get_mufu_shares(df):
 	return df
 
 def get_mmf_shares(df):
+	'''
+	Function to allocate money markey fund wealth to the different types
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	df['Municipal'] = df['FL633062000.A']/df['FL634090005.A']
 	df['Municipal'] = df['Municipal'].fillna(0)
 	df['Other'] = 1 - df['Municipal']
@@ -70,6 +86,11 @@ def get_mmf_shares(df):
 	return df[['Year', 'Municipal', 'Other']]
 
 def get_pension_shares(df):
+	'''
+	Function to allocate pension wealth to the different types
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	mufu = get_mufu_shares(df)
 	mufu = mufu.rename(columns={col: f'{col} MUFU' for col in mufu.columns if col!='Year'})
 	df = df.merge(mufu, on='Year')
@@ -80,6 +101,11 @@ def get_pension_shares(df):
 	return df[['Year', 'Equity', 'Fixed']]
 
 def get_life_insurance_shares(df):
+	'''
+	Function to allocate life insurance wealth to the different types
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	mufu = get_mufu_shares(df)
 	mufu = mufu.rename(columns={col: f'{col} MUFU' for col in mufu.columns if col!='Year'})
 	df = df.merge(mufu, on='Year')
@@ -90,6 +116,11 @@ def get_life_insurance_shares(df):
 	return df[['Year', 'Equity', 'Fixed']]
 
 def get_ira_asset_shares(df):
+	'''
+	Function to allocate IRA wealth to the different types
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	mufu = get_mufu_shares(df)
 	mufu = mufu.rename(columns={col: f'{col} MUFU' for col in mufu.columns if col!='Year'})
 	df = df.merge(mufu, on='Year')
@@ -100,6 +131,11 @@ def get_ira_asset_shares(df):
 	return df[['Year', 'Equity', 'Fixed']]
 
 def get_ira_liab_shares(df):
+	'''
+	Function to allocate IRA liabilities to the different types
+
+	df (pd.DataFrame)	: Flow of funds data
+	'''
 	IRA_dict = {
 		'FL573020033.A':'Checkable Deposits And Currency',
 		'FL573030033.A':'Time And Savings Deposits',
@@ -135,6 +171,11 @@ def get_ira_liab_shares(df):
 
 
 def get_subcategory_shares(fof):
+	'''
+	Function to split asset classes with multiple subcategories into their respective parts
+
+	fof (pd.DataFrame)	: Flow of funds data
+	'''
 	fof_pivot = fof.pivot(index='Year', columns='SERIES_NAME', values='Amount').reset_index()
 	dfs = []
 	funcs = [get_mufu_shares,get_mmf_shares,get_pension_shares,get_life_insurance_shares,get_ira_asset_shares,get_ira_liab_shares]
@@ -157,6 +198,12 @@ def get_subcategory_shares(fof):
 
 
 def get_inflation(percentiles=[90,99,100], percentile_labels=[90,9,1]):
+	'''
+	Function to load known asset price inflation for each asset type
+
+	percentiles (list[int])			: list of percentile bins 
+	percentile_labels (list[int])	: list of percentile bin names 
+	'''
 	# Housing price gain
 	JST = pd.read_stata(os.path.join(raw_folder, 'JST', 'JSTdatasetR6.dta'))
 	JST = JST[JST.country=='USA'][['year', 'housing_capgain']].rename(columns={'year':'Year', 'housing_capgain':'Asset Inflation Rate'})
@@ -193,6 +240,12 @@ def get_inflation(percentiles=[90,99,100], percentile_labels=[90,9,1]):
 	return pd.concat([JST, callreport, zeros])
 
 def load_dina(mappings, dinafile='dina_hwealsort.csv'):
+	'''
+	Function to load dina data and prepare it for merge
+
+	mappings (pd.DataFrame)	: data with relevant variables to keep and metadata on how to match to FOF
+	dinafile (str)			: name of DINA file to use
+	'''
 	# Load dina and reshape long
 	dina = pd.read_csv(os.path.join(working_folder, dinafile))
 	dina_categories = list(mappings['DINA Category'].unique())
@@ -215,6 +268,9 @@ def load_dina(mappings, dinafile='dina_hwealsort.csv'):
 	return dina
 
 def load_data_sets():
+	'''
+	Function to load flow of funds data and metadata
+	'''
 	# Flow of funds
 	fof = get_fof()
 
@@ -227,6 +283,12 @@ def load_data_sets():
 	return fof, mappings, subcategory_shares
 
 def calculate_savings_inflation(df, percentile_labels=[90,9,1]):
+	'''
+	Function to calculate savings by percentile and inflation of the residual asset class such that total savings lines up with national accounts
+
+	df (pd.DataFrame)				: main merged data
+	percentile_labels (list[int])	: percentile bin names
+	'''
 
 	# First, calculate saving and valuation gains for those where inflation is known
 	df.loc[~df['Asset Inflation Rate'].isna(), 'Saving'] = df['Amount'] - (1+df['Asset Inflation Rate'])*df['L_Amount']
@@ -272,6 +334,17 @@ def calculate_savings_inflation(df, percentile_labels=[90,9,1]):
 	return df, inflation_oth
 
 def calculate_savings_by_percentile(fof, mappings, subcategory_shares, dinafile='dina_hwealsort.csv', tag='', percentiles=[90,99,100], percentile_labels=[90,9,1]):
+	'''
+	Main fuction to calculate savings for each percentile group based on change in wealth and asset inflation in each period
+
+	fof (pd.DataFrame)					: Flow of funds data
+	mappings (pd.DataFrame)				: Metadata to match FOF to DINA and subcategory data
+	subcategory_shares (pd.DataFrame)	: Data on how FOF variables should be disaggregated into their components
+	dinafile (str)						: File containing DINA data
+	tag (str)							: Identifier for this particular run
+	percentiles (list)					: Percentile bins by which to group
+	percentile_labels (list)			: Percentile bin names
+	'''
 
 	dina = load_dina(mappings, dinafile=dinafile)
 	inflation = get_inflation(percentiles=percentiles, percentile_labels=percentile_labels)
