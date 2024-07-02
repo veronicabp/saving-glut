@@ -11,4 +11,4 @@
 
 ### Analysis
 1. `analysis.ipynb`: Code to produce main tables and figures in the text
-2. `scf_analysis.ipynb': Code to produce extra figures using SCF data
+2. `scf_analysis.ipynb`: Code to produce extra figures using SCF data
