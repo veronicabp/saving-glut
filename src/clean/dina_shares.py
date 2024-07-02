@@ -2,7 +2,7 @@ import sys
 sys.path.append('')
 from utils import * 
 
-def collapse_dina(filename='dina.csv', tag='', sort='hweal', variables=['taxbond', 'currency','equity','bus','fi','pens','muni', 'ownerhome', 'ownermort', 'nonmort', 'poinc','peinc','gov_surplus','gov_consumption'], bins=np.array([.9, .99, 1]), labels=np.array([90, 9, 1])):
+def collapse_dina(filename='dina.csv', tag='', sort='hweal', variables=['taxbond', 'currency','equity','bus','fi','pens','muni', 'ownerhome', 'ownermort', 'nonmort', 'poinc','peinc','dicsh','gov_surplus','gov_consumption'], bins=np.array([.9, .99, 1]), labels=np.array([90, 9, 1])):
 	file = os.path.join(raw_folder, 'dina', f'usdina19622019{tag}.dta')
 	df = pd.read_stata(file)
 
@@ -14,8 +14,12 @@ def collapse_dina(filename='dina.csv', tag='', sort='hweal', variables=['taxbond
 	df = df.rename(columns={'year':'Year','hwbus':'bus', 'hwpen':'pens', 'hwequ':'equity', 'hwfix':'fi', 'colexp':'gov_consumption'})
 	df['gov_surplus'] = df['govin'] + df['prisupgov']
 
+	# Save observation counts
+	counts = df.groupby(['Year','Percentile']).size().reset_index().rename(columns={0:'obs_count'})
+
 	# Get weighted sum
 	df = weighted_sum_collapse(df, ['Year', 'Percentile'], variables, 'returns')
+	df = df.merge(counts, on=['Year','Percentile'])
 
 	# Interpolate missing years (1963 & 1965)
 	df.sort_values(['Year', 'Percentile'], inplace=True)

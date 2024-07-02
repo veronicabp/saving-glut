@@ -1,35 +1,36 @@
 
 ************* 1983 panel data *************
-global working "/Users/veronicabackerperal/Dropbox (Princeton)/Princeton/saving-glut/data/working"
-
-global clean "/Users/veronicabackerperal/Dropbox (Princeton)/Princeton/saving-glut/data/clean"
+global dir "/Users/veronicabackerperal/Dropbox (Princeton)/Princeton/saving-glut"
+global data "$dir/data"
+global raw "$data/raw"
+global working "/$data/working"
+global clean "$data/clean"
 
 local vars "ageh bnd savbnd liqcer mfun pen life ofin vehi onfin house oest hdebt pdebt ffa* tinc"
 
-use "$temp/scfpluswith2019", clear
+use "$raw/scf/scfpluswith2019", clear
 keep if year==1983 
 keep if impnum==1
 
 rename id idlong
 gen id=real(substr(idlong,5,10))
 
-keep id `vars'
-rename * *1983
-
 // Make nominal
-local CPI = .4361883 // From SCF plus CPI measure
 foreach var of varlist `vars'{
 	if "`var'"=="`ageh'" {
 		continue
 	}
-	replace `var' = `var'*`CPI'
+	replace `var' = `var'*CPI
 }
 
-merge 1:m id1983 using "$temp/SCFpanelidmatch", keep(match) nogen
+keep id `vars'
+rename * *1983
+
+merge 1:m id1983 using "$raw/scf/SCFpanelidmatch", keep(match) nogen
 save "$working/panel1983.dta", replace
 
 ************* 1989 panel data *************
-use "$input/SCFdatafromAmir/scf89p.dta", clear
+use "$raw/scf/scf_1983-1989_panel/scf89p.dta", clear
 
 sort xx1 x1
 by xx1: keep if _n==1
@@ -124,17 +125,42 @@ gen fin=liq+cds+nmmf+stocks+bond+retqliq+savbnd+cashli+othma+othfin
 // Non-financial
 gen vehic = max(0,x8166)+max(0,x8167)+max(0,x8168)+max(0,x2422)+max(0,x2506)+max(0,x2606)+max(0,x2623)
 
+replace x507=9000 if x507>9000
 gen houses = x604+x614+x623+x716+((10000-max(0,x507))/10000)*(x513+x526)
 
 local l "12, 14, 21, 22, 25, 40, 41, 42, 43, 44, 49, 50, 52, 999"
 gen oresre = max(x1405, x1409) + max(x1505, x1509) + max(x1605, x1609) + max(0, x1619) + (inlist(x1703, `l') * max(0, x1706) * (x1705 / 10000)) + (inlist(x1803, `l') * max(0, x1806) * (x1805 / 10000)) + (inlist(x1903, `l') * max(0, x1906) * (x1905 / 10000)) + max(0, x2002)
 
 local l "1, 2, 3, 4, 5, 6, 7, 10, 11, 13, 15, 24, 45, 46, 47, 48, 51, 53, -7"
-gen nnresre = (inlist(x1703, `l') * max(0, x1706) * (x1705 / 10000)) + (inlist(x1803, `l') * max(0, x1806) * (x1805 / 10000)) + (inlist(x1903, `l') * max(0, x1906) * (x1905 / 10000)) + max(0, x2012) - (inlist(x1703, `l') * x1715 * (x1705 / 10000)) - (inlist(x1803, `l') * x1815 * (x1805 / 10000)) - (inlist(x1903, `l') * x1915 * (x1905 / 10000)) - x2016
+gen nnresre = (inlist(x1703, `l') * max(0, x1706) * (x1705 / 10000)) ///
+		+ (inlist(x1803, `l') * max(0, x1806) * (x1805 / 10000)) ///
+		+ (inlist(x1903, `l') * max(0, x1906) * (x1905 / 10000)) ///
+		+ max(0, x2012) ///
+		- (inlist(x1703, `l') * x1715 * (x1705 / 10000)) ///
+		- (inlist(x1803, `l') * x1815 * (x1805 / 10000)) ///
+		- (inlist(x1903, `l') * x1915 * (x1905 / 10000)) - x2016
+		
+gen flag781 = nnresre!=0
+replace nnresre = nnresre - (x2723 * (x2710 == 78)) - (x2740 * (x2727 == 78)) - (x2823 * (x2810 == 78)) - (x2840 * (x2827 == 78)) - (x2923 * (x2910 == 78)) - (x2940 * (x2927 == 78)) if nnresre!=0
 
 replace x507=9000 if x507>9000
 replace x507=0 if x507<0
 gen farmbus = (x507/10000)*(x513+x526-x805-x905-x1005 - x1108*(x1103==1) - x1119*(x1114==1) - x1130*(x1125==1) )
+
+// Take farm portion out of real estate variables
+foreach var of varlist x805 x808 x813 x905 x908 x913 x1005 x1008 x1013 {
+	replace `var' = `var'*((10000-x507)/10000)
+}
+
+replace x1108 = x1108*((10000-x507)/10000) if x1103==1
+replace x1109 = x1109*((10000-x507)/10000) if x1103==1
+
+replace x1119 = x1119*((10000-x507)/10000) if x1114==1
+replace x1120 = x1120*((10000-x507)/10000) if x1114==1
+
+replace x1130 = x1130*((10000-x507)/10000) if x1125==1
+replace x1131 = x1131*((10000-x507)/10000) if x1125==1
+
 gen bus = max(0, x3129) + max(0, x3124) - max(0, x3126) * (x3127 == 5) + max(0, x3121) * inlist(x3122, 1, 6) + max(0, x3229) + max(0, x3224) - max(0, x3226) * (x3227 == 5) + max(0, x3221) * inlist(x3222, 1, 6) + max(0, x3329) + max(0, x3324) - max(0, x3326) * (x3327 == 5) + max(0, x3321) * inlist(x3322, 1, 6) + max(0, x3335) + farmbus + max(0, x3408) + max(0, x3412) + max(0, x3416) + max(0, x3420) + max(0, x3424) + max(0, x3428)
 
 gen othnfin = x4022+x4026+x4030-othfin+x4018
@@ -151,7 +177,14 @@ local values = "12, 14, 21, 22, 25, 40, 41, 42, 43, 44, 49, 50, 52, 53, 999"
 gen mort1 = inlist(x1703, `values') * x1715 * (x1705 / 10000)
 gen mort2 = inlist(x1803, `values') * x1815 * (x1805 / 10000)
 gen mort3 = inlist(x1903, `values') * x1915 * (x1905 / 10000)
+
 gen resdbt = x1417 + x1517 + x1617 + x1621 + mort1 + mort2 + mort3 + x2006
+
+replace resdbt = resdbt + (x2723 * (x2710 == 78)) + (x2740 * (x2727 == 78)) + (x2823 * (x2810 == 78)) + (x2840 * (x2827 == 78)) + (x2923 * (x2910 == 78)) + (x2940 * (x2927 == 78)) if flag781!=1 & oresre>0
+gen flag782 = flag781!=1 & oresre>0
+
+replace resdbt = resdbt + (x2723 * (x2710 == 67)) + (x2740 * (x2727 == 67)) + (x2823 * (x2810 == 67)) + (x2840 * (x2827 == 67)) + (x2923 * (x2910 == 67)) + (x2940 * (x2927 == 67)) if oresre>0
+gen flag67 = oresre>0
 
 gen othloc = x1108 * (x1103 != 1) + x1119 * (x1114 != 1) + x1130 * (x1125 != 1) + max(0, x1136) * (x1108 * (x1103 != 1) + x1119 * (x1114 != 1) + x1130 * (x1125 != 1))/(x1108+x1119+x1130) if (x1108+x1119+x1130)>=1
 replace othloc = ((houses<=0)+.5*(houses>0))*(max(0,x1136)) if (x1108+x1119+x1130)<1
@@ -159,6 +192,12 @@ replace othloc = ((houses<=0)+.5*(houses>0))*(max(0,x1136)) if (x1108+x1119+x113
 gen ccbal = max(0,x427)+max(0,x413)+max(0,x421)+max(0,x430)+max(0,x424)
 
 gen install = x2218+x2318+x2418+x2424+x2519+x2619+x2625+x1044+x1215+x1219
+
+replace install = install + (x2723 * (x2710 == 78)) + (x2740 * (x2727 == 78)) + (x2823 * (x2810 == 78)) + (x2840 * (x2827 == 78)) + (x2923 * (x2910 == 78)) + (x2940 * (x2927 == 78)) if flag781==0 & flag782==0
+
+replace install = install + (x2723 * (x2710 == 67)) + (x2740 * (x2727 == 67)) + (x2823 * (x2810 == 67)) + (x2840 * (x2827 == 67)) + (x2923 * (x2910 == 67)) + (x2940 * (x2927 == 67)) if flag67==0
+
+replace install = install + (x2723 * (x2710 != 67 & x2710 != 78)) + (x2740 * (x2727 != 67 & x2727 != 78)) + (x2823 * (x2810 != 67 & x2810 != 78)) + (x2840 * (x2827 != 67 & x2827 != 78)) + (x2923 * (x2910 != 67 & x2910 != 78)) + (x2940 * (x2927 != 67 & x2927 != 78))
 
 gen outpen1 = max(0, x4229) * (x4230 == 5)
 gen outpen2 = max(0, x4329) * (x4330 == 5)
@@ -177,7 +216,9 @@ gen debt=hdebt+pdebt
 // Net worth
 gen networth=asset-debt
 
-// keep networth asset debt income mrthel nfin fin houses id198*
+rename x1 case_id 
+rename xx1 id 
+
 drop x* j* k*
 
 // Convert to SCFplus variables
@@ -204,7 +245,7 @@ foreach var of varlist `vars' {
 	rename `var' `var'1989
 }
 
-merge 1:1 id1989 using "$temp/SCFpanelidmatch", keep(match) nogen
+merge 1:1 id1989 using "$raw/scf/SCFpanelidmatch", keep(match) nogen
 save "$working/panel1989.dta", replace
 
 // Merge
