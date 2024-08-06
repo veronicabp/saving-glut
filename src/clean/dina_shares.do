@@ -1,3 +1,4 @@
+*dina clean
 capture program drop collapse_dina
 program define collapse_dina
     syntax, nbins(integer) sortvar(string) cutoffs(string) [tag(string)]
